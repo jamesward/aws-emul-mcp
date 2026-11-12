@@ -1,0 +1,2 @@
+# Tells buildpack-scala-native (aws-emulator branch) to ship the AWS Emulator in the slug.
+# Empty: the latest LTS package. A package URL on its own line pins one.

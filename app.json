@@ -1,0 +1,17 @@
+{
+  "name": "aws-emul-mcp",
+  "description": "Remote MCP server: AWS Knowledge tools plus on-demand AWS Emulator instances for agents.",
+  "repository": "https://github.com/jamesward/aws-emul-mcp",
+  "buildpacks": [
+    { "url": "heroku/jvm" },
+    { "url": "https://github.com/jamesward/buildpack-scala-native#aws-emulator" }
+  ],
+  "formation": {
+    "web": { "quantity": 1, "size": "standard-2x" }
+  },
+  "env": {
+    "MAX_EMULATORS": { "description": "Emulators that may run at once on the dyno (each uses about 300 MB).", "value": "2" },
+    "EMULATOR_IDLE_TIMEOUT_SECONDS": { "description": "An emulator stops after this long without API calls.", "value": "1800" },
+    "AWS_EMULATOR_TELEMETRY": { "description": "The emulator's usage telemetry: on or off.", "value": "off" }
+  }
+}
