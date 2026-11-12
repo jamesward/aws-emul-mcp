@@ -13,7 +13,22 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  jvm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: sbt
+      - name: The AWS Emulator
+        run: |
+          curl -fsSL -o /tmp/aws-emulator.deb https://downloads.aws.com/aws-emulator/packages/aws-emulator/LTS/latest/aws-emulator_amd64.deb
+          sudo apt-get install -y /tmp/aws-emulator.deb
+      - run: ./sbta -Dnative=false "Test / compile; testFull"
+
+  native:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -32,7 +47,7 @@ jobs:
           sudo apt-get install -y /tmp/aws-emulator.deb
           aws-emulator -v
       - run: ./sbta extractSkillsJars
-      - run: ./sbta "Test / compile; testFull; nativeLink"
+      - run: ./sbta -Dnative=true "Test / compile; testFull; nativeLink"
       - name: Smoke test the native binary
         run: |
           bin=target/out/native0.5/scala-3.10.1/aws-emul-mcp/aws-emul-mcp

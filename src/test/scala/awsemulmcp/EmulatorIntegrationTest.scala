@@ -7,54 +7,31 @@ import java.nio.charset.StandardCharsets.UTF_8
 import kyo.*
 
 /** Runs a real `aws-emulator` (set AWS_EMULATOR_BIN, or install the package so /opt/aws-emulator/bin/aws-emulator exists). */
-class EmulatorIntegrationTest extends munit.FunSuite:
+class EmulatorIntegrationTest extends kyo.test.Test[Any]:
+
+  override protected def timeout: Duration = 5.minutes
 
   private val binary: Option[String] =
     sys.env.get("AWS_EMULATOR_BIN").orElse(Some("/opt/aws-emulator/bin/aws-emulator")).filter(p => java.io.File(p).canExecute)
 
-  override def munitTimeout = scala.concurrent.duration.Duration(5, "min")
-
-  private def mcp(routes: Routes, session: String, method: String, params: String): String =
+  private def mcp(routes: Routes, session: String, method: String, params: String): String < Async =
     val body = s"""{"jsonrpc":"2.0","id":1,"method":"$method","params":$params}"""
-    bodyText(run(routes.handle(request(HttpMethod.POST, "/mcp", Seq("Mcp-Session-Id" -> session), body.getBytes(UTF_8)))))
+    routes.handle(request(HttpMethod.POST, "/mcp", Seq("Mcp-Session-Id" -> session), body.getBytes(UTF_8))).map(bodyText)
 
-  private def toolResult(json: String): CallToolResult =
-    Json.decode[RpcSuccess](json).flatMap(s => Structure.decode[CallToolResult](s.result)).getOrThrow
+  private def tool(routes: Routes, session: String, name: String, arguments: String): CallToolResult < (Async & Abort[Any]) =
+    mcp(routes, session, "tools/call", s"""{"name":"$name","arguments":$arguments}""").map { json =>
+      Abort.get(Json.decode[RpcSuccess](json).flatMap(s => Structure.decode[CallToolResult](s.result)))
+    }
 
-  private def structured[A: Schema](json: String): A =
-    toolResult(json).structuredContent.map(v => Structure.decode[A](v).getOrThrow).getOrElse(fail(s"no structuredContent in $json"))
+  private def structured[A: Schema](result: CallToolResult): A < Abort[Any] =
+    result.structuredContent match
+      case Present(v) => Abort.get(Structure.decode[A](v))
+      case _          => Abort.fail(s"no structuredContent in $result")
 
-  test("create an emulator, call it through the tool and through the proxy, then delete it") {
-    assume(binary.isDefined, "aws-emulator is not installed")
-    val cfg = config(
-      "AWS_EMULATOR_BIN"   -> binary.get,
-      "MAX_EMULATORS"      -> "1",
-      "EMULATOR_HOME_ROOT" -> java.nio.file.Files.createTempDirectory("emulators").toString,
-      "PUBLIC_URL"         -> "https://app.example.com",
-    )
-    val (routes, _) = run(Fixtures.routes(cfg))
-    val session     = "test-session"
-
-    val created = structured[EmulatorInfo](mcp(routes, session, "tools/call", """{"name":"emulator_create","arguments":{}}"""))
-    assert(created.endpointUrl == "https://app.example.com")
-    assert(created.environment.contains(s"AWS_ACCESS_KEY_ID=${created.accessKeyId}"))
-
-    // At capacity
-    val second = toolResult(mcp(routes, session, "tools/call", """{"name":"emulator_create","arguments":{}}"""))
-    assert(second.isError && second.content.exists(_.text.contains("maximum of 1")))
-
-    // The emulator_request tool signs for the emulator itself.
-    val sts = structured[RequestOutput](mcp(
-      routes,
-      session,
-      "tools/call",
-      s"""{"name":"emulator_request","arguments":{"emulatorId":"${created.emulatorId}","service":"sts","headers":{"Content-Type":"application/x-www-form-urlencoded"},"body":"Action=GetCallerIdentity&Version=2011-06-15"}}""",
-    ))
-    assert(sts.status == 200 && sts.body.contains(AppInfo.AccountId), sts.toString)
-
-    // A client that signed for the public host name (what the AWS SDKs do) reaches the emulator through the proxy.
+  /** What an AWS SDK sends: SQS CreateQueue (JSON protocol), signed for the public host name. */
+  private def sdkRequest(created: EmulatorInfo, now: java.time.Instant): HttpRequest[Routes.Body] =
     val body    = """{"QueueName":"proxied"}""".getBytes(UTF_8)
-    val amzDate = SigV4.amzDate(java.time.Instant.now())
+    val amzDate = SigV4.amzDate(now)
     val headers = Chunk(
       "Host"                 -> "app.example.com",
       "Content-Type"         -> "application/x-amz-json-1.0",
@@ -64,33 +41,50 @@ class EmulatorIntegrationTest extends munit.FunSuite:
     )
     val creds = Credentials(AccessKeyId(created.accessKeyId), SecretAccessKey(created.secretAccessKey))
     val auth  = SigV4.authorization(creds, amzDate, AppInfo.Region, "sqs", SigV4.Request("POST", "/", Absent, headers, body))
-    val proxied = run(routes.handle(request(
-      HttpMethod.POST,
-      "/",
-      headers.toSeq :+ ("Authorization" -> auth) :+ ("X-Forwarded-For" -> "203.0.113.9"),
-      body,
-    )))
-    assert(proxied.status == HttpStatus.OK, bodyText(proxied))
-    assert(bodyText(proxied).contains("proxied"), bodyText(proxied))
+    request(HttpMethod.POST, "/", headers.toSeq :+ ("Authorization" -> auth) :+ ("X-Forwarded-For" -> "203.0.113.9"), body)
 
-    val listed = structured[EmulatorList](mcp(routes, session, "tools/call", """{"name":"emulator_list","arguments":{}}"""))
-    assert(listed.emulators.map(_.emulatorId) == Chunk(created.emulatorId))
-    val otherSession = structured[EmulatorList](mcp(routes, "someone-else", "tools/call", """{"name":"emulator_list","arguments":{}}"""))
-    assert(otherSession.emulators.isEmpty)
+  "create an emulator, call it through the tool and through the proxy, then delete it" in {
+    assume(binary.isDefined, "aws-emulator is not installed")
+    val cfg = appConfig(
+      "AWS_EMULATOR_BIN"   -> binary.getOrElse(""),
+      "MAX_EMULATORS"      -> "1",
+      "EMULATOR_HOME_ROOT" -> java.nio.file.Files.createTempDirectory("emulators").toString,
+      "PUBLIC_URL"         -> "https://app.example.com",
+    )
+    val session = "test-session"
+    for
+      (routes, _) <- Fixtures.routes(cfg)
+      created     <- tool(routes, session, "emulator_create", "{}").map(structured[EmulatorInfo])
+      _ = assert(created.endpointUrl == "https://app.example.com")
+      _ = assert(created.environment.contains(s"AWS_ACCESS_KEY_ID=${created.accessKeyId}"))
 
-    val deleted = structured[Deleted](mcp(
-      routes,
-      session,
-      "tools/call",
-      s"""{"name":"emulator_delete","arguments":{"emulatorId":"${created.emulatorId}"}}""",
-    ))
-    assert(deleted.deleted)
-    val after = toolResult(mcp(
-      routes,
-      session,
-      "tools/call",
-      s"""{"name":"emulator_request","arguments":{"emulatorId":"${created.emulatorId}","service":"sts"}}""",
-    ))
-    assert(after.isError)
+      second <- tool(routes, session, "emulator_create", "{}")
+      _ = assert(second.isError && second.content.exists(_.text.contains("maximum of 1")), second.toString)
+
+      // The emulator_request tool signs for the emulator itself.
+      sts <- tool(
+        routes,
+        session,
+        "emulator_request",
+        s"""{"emulatorId":"${created.emulatorId}","service":"sts","headers":{"Content-Type":"application/x-www-form-urlencoded"},"body":"Action=GetCallerIdentity&Version=2011-06-15"}""",
+      ).map(structured[RequestOutput])
+      _ = assert(sts.status == 200 && sts.body.contains(AppInfo.AccountId), sts.toString)
+
+      // A client that signed for the public host name reaches the emulator through the proxy.
+      now     <- Clock.now
+      proxied <- routes.handle(sdkRequest(created, now.toJava))
+      _ = assert(proxied.status == HttpStatus.OK, bodyText(proxied))
+      _ = assert(bodyText(proxied).contains("proxied"), bodyText(proxied))
+
+      listed <- tool(routes, session, "emulator_list", "{}").map(structured[EmulatorList])
+      _ = assert(listed.emulators.map(_.emulatorId) == Chunk(created.emulatorId))
+      others <- tool(routes, "someone-else", "emulator_list", "{}").map(structured[EmulatorList])
+      _ = assert(others.emulators.isEmpty)
+
+      deleted <- tool(routes, session, "emulator_delete", s"""{"emulatorId":"${created.emulatorId}"}""").map(structured[Deleted])
+      _ = assert(deleted.deleted)
+      after <- tool(routes, session, "emulator_request", s"""{"emulatorId":"${created.emulatorId}","service":"sts"}""")
+    yield assert(after.isError)
+    end for
   }
 end EmulatorIntegrationTest

@@ -7,12 +7,8 @@ import java.nio.charset.StandardCharsets.UTF_8
 import kyo.*
 
 object Fixtures:
-  import AllowUnsafe.embrace.danger
 
-  def run[A](v: A < (Async & Scope & Abort[Any])): A =
-    KyoApp.Unsafe.runAndBlock(3.minutes)(v).getOrThrow
-
-  def config(vars: (String, String)*): Config =
+  def appConfig(vars: (String, String)*): Config =
     Config.fromEnv(name => Maybe.fromOption(vars.toMap.get(name).orElse(sys.env.get(name)))) match
       case Result.Success(c) => c
       case other             => throw IllegalArgumentException(s"bad test config: $other")

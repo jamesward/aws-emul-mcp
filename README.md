@@ -59,7 +59,7 @@ enforce IAM policies the way AWS does.
 | Variable | Default | |
 |---|---|---|
 | `PORT` | `8080` | HTTP port |
-| `MAX_EMULATORS` | `2` | Emulators running at once (each uses about 300 MB); `0` disables them |
+| `MAX_EMULATORS` | `2` | Emulators running at once (each about 180 MB, plus about 110 MB shared by all); `0` disables them |
 | `EMULATOR_IDLE_TIMEOUT_SECONDS` | `1800` | Idle time before an emulator stops |
 | `AWS_EMULATOR_BIN` | `aws-emulator` | The emulator binary (the buildpack sets it) |
 | `AWS_EMULATOR_TELEMETRY` | `off` | The emulator's usage telemetry, `on` or `off` |
@@ -83,4 +83,12 @@ web dyno: emulators live on the dyno that started them.
 
 ## Develop
 
-See [AGENTS.md](AGENTS.md) for the build, test and validation commands.
+The same code builds as a JVM app for development and as a Scala Native binary for production. With the
+[AWS Emulator package](https://docs.aws.amazon.com/emulator/latest/userguide/getting-started-linux.html) installed:
+
+```sh
+AWS_EMULATOR_BIN=/opt/aws-emulator/bin/aws-emulator ./sbta ~runReload
+```
+
+restarts the server on every change (add `-Dnative=false` where the Scala Native headers are installed). See
+[AGENTS.md](AGENTS.md) for the build, test and validation commands.

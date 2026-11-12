@@ -3,7 +3,7 @@ package awsemulmcp
 import awsemulmcp.emulator.EmulatorFiles
 import kyo.*
 
-class EmulatorFilesTest extends munit.FunSuite:
+class EmulatorFilesTest extends kyo.test.Test[Any]:
 
   // Captured from aws-emulator 1.0.322.
   private val stdout =
@@ -13,15 +13,15 @@ class EmulatorFilesTest extends munit.FunSuite:
       |{"timestamp":"2026-11-12T14:52:29.050967Z","level":"INFO","fields":{"message":"emulator server information","endpoint_url":"https://127.0.0.1:40793","health_check_url":"https://127.0.0.1:40793/__admin/health","config_file":"/h/.aws/emulator/40793/config","ca_file":"/h/.aws/emulator/40793/ca.pem","java_truststore_file":"/h/.aws/emulator/40793/truststore.p12"},"target":"aws_emulator_server"}
       |""".stripMargin
 
-  test("finds the port and CA in the startup line") {
+  "finds the port and CA in the startup line" in {
     assert(EmulatorFiles.startup(stdout) == Present(EmulatorFiles.Startup(40793, "/h/.aws/emulator/40793/ca.pem")))
   }
 
-  test("no startup line yet") {
+  "no startup line yet" in {
     assert(EmulatorFiles.startup(stdout.linesIterator.take(2).mkString("\n")) == Absent)
   }
 
-  test("reads the credentials file") {
+  "reads the credentials file" in {
     val ini = "[default]\naws_access_key_id = EMULATOR0001F5C13B52\naws_secret_access_key = D82AA0A2EE01B5E2266BA5EC291AD5DCA7BD630F\n"
     val creds = EmulatorFiles.credentials(ini)
     assert(creds.map(_.accessKeyId) == Present(AccessKeyId("EMULATOR0001F5C13B52")))

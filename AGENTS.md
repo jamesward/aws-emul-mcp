@@ -51,9 +51,7 @@ then the smoke test in `.github/workflows/ci.yml` (start the binary, request `/h
 - `EmulatorIntegrationTest` runs a real emulator: it needs `aws-emulator` installed
   (`/opt/aws-emulator/bin/aws-emulator`, or `AWS_EMULATOR_BIN`). Without it the test is reported as skipped by `assume`.
   CI installs the package. Not paid or metered.
-- Run locally: `./sbta nativeLink`, then
-  `AWS_EMULATOR_BIN=/opt/aws-emulator/bin/aws-emulator PORT=8080 target/out/native0.5/scala-3.10.1/aws-emul-mcp/aws-emul-mcp`
-  and add `http://localhost:8080/mcp` to an MCP client.
+- The native binary: `target/out/native0.5/scala-3.10.1/aws-emul-mcp/aws-emul-mcp`.
 
 ## Production
 
@@ -61,8 +59,11 @@ then the smoke test in `.github/workflows/ci.yml` (start the binary, request `/h
   `https://github.com/jamesward/buildpack-scala-native#aws-emulator` (see `app.json`). The `.aws-emulator` file makes the
   buildpack ship the emulator in the slug; `.profile.d` sets `AWS_EMULATOR_BIN`.
 - Exactly one web dyno: emulators are child processes holding in-memory state, and requests are routed to them by access
-  key on the dyno that started them. Each emulator uses about 300 MB; `MAX_EMULATORS` (default 2) must fit the dyno size
-  (`standard-2x` in `app.json`).
+  key on the dyno that started them. Each idle emulator holds about 180 MB of its own memory, plus about 110 MB of binary
+  pages shared by all of them; `MAX_EMULATORS` (default 2) must fit the dyno size (`standard-2x` in `app.json`).
+- The emulator's embedded mode (in-process, Rust only) was considered and not used: it needs the emulator built from source
+  (100 GB `target/`) behind a C ABI wrapper, and most of an emulator's memory is its own state, which embedding would not
+  share.
 - Logs: one JSON object per line on stdout from `AppLog` (`timestamp`, `level`, `logger`, `message`, `cause`, extra fields),
   with the router's `X-Request-ID` as `request_id` on every entry written while a request is handled. Kyo's own `Log`
   output goes through `AppLog.JsonLogger`. `KYO_NET_BACKEND=epoll` in the Procfile avoids kyo-net's plain-text startup
@@ -77,11 +78,17 @@ then the smoke test in `.github/workflows/ci.yml` (start the binary, request `/h
 
 - **Kyo `1.0.0-RC7`** (prerelease): Kyo has no stable 1.x release yet, and it is the only Kyo line with Scala Native
   builds of `kyo-http`, `kyo-net` and `kyo-system`.
-- **No sbt-reload or sbt-native-packager:** they package and reload JVM servers; a Scala Native server is a single binary
-  that `buildpack-scala-native` ships, and `nativeLink` stands in for `stage`.
+- **No sbt-native-packager:** a Scala Native server is a single binary that `buildpack-scala-native` ships, and `nativeLink`
+  stands in for `stage`. sbt-reload works on the JVM build only, so it is disabled when the build is Native.
+- **kyo-ffi-plugin's tasks reimplemented:** Kyo's documented Native setup uses kyo-ffi-plugin's
+  `ffiNativeDependencyLinkingOptions` / `ffiNativeDependencyCompileOptions`, but the plugin is published for sbt 1 only.
+  `project/NativeLinking.scala` defines the same two tasks for sbt 2, reading the same `META-INF/kyo-ffi` manifests. Switch to
+  the plugin once it is published for sbt 2.
 - **No `AppTest` / Testcontainers:** the only service dependency is the emulator binary, which tests start as a child
   process exactly as production does.
-- **Tests use munit** (`assert` with plain boolean expressions): ZIO Test isn't used in a Kyo project.
+- **Tests use kyo-test** (`assert` with plain boolean expressions) instead of ZIO Test, in a Kyo project.
+- **`kyo-mcp` is not used:** it has stdio, Unix-socket and in-memory JSON-RPC transports but no Streamable HTTP, and its
+  handlers advertise schemas derived from Scala types, so it cannot relay the upstream server's tools as they are.
 - **`.jvmopts` sets `-Xmx3g`:** Scala Native's linker runs out of the default 1 GB heap on this build.
 - **Custom HTTP/1.1 client for the emulator hop** (`http/Http1.scala`, `http/EmulatorConnection.scala`): kyo-http's
   client has no per-connection CA setting, and every emulator run has its own self-signed CA, so the proxy speaks HTTP/1.1
